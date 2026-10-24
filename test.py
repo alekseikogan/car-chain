@@ -110,15 +110,13 @@ agent = create_agent(
 
 result = agent.invoke({
     "messages": [
-        {"role": "user", "content": "How much is a Toyota GT86?"}
+        {"role": "user", "content": "How much is a BMW 320d?"}
     ]
 })
 
-for message in result["messages"]:
-    print(f"\n--- {type(message).__name__} ---")
+answer = result["structured_response"]
 
-    if isinstance(message, AIMessage) and message.tool_calls:
-        print("Tool calls:", message.tool_calls)
-
-    if message.content:
-        print("Content:", message.content)
+print(answer)
+print(answer.verdict)
+print(answer.estimated_price)
+print(answer.reason)
