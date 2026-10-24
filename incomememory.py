@@ -56,7 +56,7 @@ agent = create_agent(
 # -------------------------------------------------------------
 # Использование: создаем конфигурацию с thread_id (ID диалога)
 # -------------------------------------------------------------
-config = {"configurable": {"thread_id": "dialog-1"}}
+dialog = {"configurable": {"thread_id": "dialog-1"}}
 
 # ШАГ 1: Пользователь называет машину
 agent.invoke(
@@ -68,7 +68,7 @@ agent.invoke(
 # Агент ПОМНИТ из предыдущего сообщения, что речь идет о BMW 320d!
 res2 = agent.invoke(
     {"messages": [("human", "Какая у неё рыночная цена?")]}, 
-    config=config
+    config=dialog
 )
 
 print(res2["messages"][-1].content)
