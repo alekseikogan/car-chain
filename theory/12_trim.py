@@ -16,6 +16,11 @@ from typing import Literal
 
 from langchain_core.messages import trim_messages
 from langchain_core.messages.utils import count_tokens_approximately
+from langchain.agents.middleware import before_model
+from langchain.agents import AgentState
+from langchain.messages import RemoveMessage
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from langgraph.runtime import Runtime
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -92,6 +97,100 @@ memory = InMemorySaver(
     serde=JsonPlusSerializer(allowed_msgpack_modules=[("__main__", "CarAnswer")])
 )
 
+
+from langchain_core.messages import AIMessage, ToolMessage
+
+
+def validate_tool_calls(messages):
+    pending = set()
+
+    for message in messages:
+        if isinstance(message, AIMessage):
+            for call in message.tool_calls:
+                pending.add(call["id"])
+
+        elif isinstance(message, ToolMessage):
+            if message.tool_call_id not in pending:
+                raise ValueError(
+                    f"ToolMessage without AIMessage: "
+                    f"{message.tool_call_id}"
+                )
+            pending.remove(message.tool_call_id)
+
+    if pending:
+        raise ValueError(
+            f"Unanswered tool calls: {pending}"
+        )
+
+    print("История корректна")
+
+
+from langchain_core.messages import HumanMessage
+
+
+def split_into_turns(messages):
+    turns = []
+
+    for message in messages:
+        if isinstance(message, HumanMessage):
+            turns.append([])
+
+        if not turns:
+            raise ValueError("History must start with HumanMessage")
+
+        turns[-1].append(message)
+
+    return turns
+
+
+def trim_complete_turns(messages, max_tokens=300):
+    turns = split_into_turns(messages)
+
+    kept = []
+
+    for turn in reversed(turns):
+        candidate = turn + kept
+
+        if count_tokens_approximately(candidate) > max_tokens:
+            break
+
+        kept = candidate
+
+    return kept
+
+
+@before_model
+def limit_history(state: AgentState, runtime: Runtime):
+    messages = state["messages"]
+
+    # Оставляем не более ~1200 токенов истории.
+    trimmed = trim_complete_turns(
+        messages,
+        max_tokens=1200,
+    )
+
+    # Если последний ход не помещается в бюджет,
+    # не удаляем его: обрабатываем отдельно.
+    if not trimmed:
+        print("[TRIM] Последний ход превышает бюджет")
+        return None
+
+    if len(trimmed) == len(messages):
+        return None
+
+    validate_tool_calls(trimmed)
+
+    print(f"[TRIM] Было: {len(messages)}")
+    print(f"[TRIM] Стало: {len(trimmed)}")
+
+    return {
+        "messages": [
+            RemoveMessage(id=REMOVE_ALL_MESSAGES),
+            *trimmed,
+        ]
+    }
+
+
 agent = create_agent(
     model=ChatOpenAI(model="gpt-4o-mini"),
     tools=[search_catalog, get_car_price, get_car_year],
@@ -105,13 +204,10 @@ agent = create_agent(
     """,
     response_format=CarAnswer,
     checkpointer=memory,
+    middleware=[limit_history],  # Добавили
 )
 
-
-# Используем отдельный диалог,
-# чтобы не смешивать результат с предыдущими тестами.
-
-dialog = {"configurable": {"thread_id": "trim-1"}}
+dialog = {"configurable": {"thread_id": "trim-test-1"}}
 
 questions = [
     "Сколько стоит BMW 320d?",
@@ -121,49 +217,24 @@ questions = [
     "Какого она года?",
 ]
 
-
-from langchain_core.messages import trim_messages
-from langchain_core.messages.utils import count_tokens_approximately
-
-
-dialog = {"configurable": {"thread_id": "trim-1"}}
-
-questions = [
-    "Сколько стоит BMW 320d?",
-    "Какой у неё расход?",
-    "Какой у неё пробег?",
-    "Какие у неё недостатки?",
-    "Какого она года?",
-]
-
-for i, question in enumerate(questions, start=1):
-    print(f"\n=== ВОПРОС {i} ===")
-    print(question)
+for question in questions:
+    print(f"\nUSER: {question}")
 
     result = agent.invoke(
         {"messages": [{"role": "user", "content": question}]},
         config=dialog,
     )
 
-    messages = result["messages"]
+    answer = result["structured_response"]
 
-    print("Сообщений в памяти:", len(messages))
-    print("Токенов приблизительно:",
-          count_tokens_approximately(messages))
+    print("ANSWER:", answer.reason)
 
-    trimmed = trim_messages(
-        messages,
-        max_tokens=300,
-        strategy="last",
-        token_counter="approximate",
-        start_on="human",
-        allow_partial=False,
+    state = agent.get_state(dialog)
+
+    print("Messages:", len(state.values["messages"]))
+    print(
+        "Approx tokens:",
+        count_tokens_approximately(state.values["messages"]),
     )
 
-    print("После обрезки:", len(trimmed))
-    print("Токенов после:",
-          count_tokens_approximately(trimmed))
-
-    print("Оставшиеся типы:")
-    for message in trimmed:
-        print(" -", type(message).__name__)
+    validate_tool_calls(state.values["messages"])
