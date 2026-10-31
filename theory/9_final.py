@@ -112,7 +112,12 @@ agent.invoke(
 )
 
 result = agent.invoke(
-    {"messages": [{"role": "user", "content": "Какой у неё расход и пробег?"}]},
+    {
+        "messages": [
+            {"role": "user",
+            "content": "Какой у неё расход и пробег?"}
+            ]
+    },
     dialog,
 )
 
