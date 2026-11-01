@@ -61,42 +61,46 @@ store = InMemoryVectorStore.from_documents(
     chunks,
     OpenAIEmbeddings(model="text-embedding-3-small"),
 )
-# 1. Поиск без фильтра
-docs = store.similarity_search(
-    query="расход",
-    k=2,
-)
-
-print("=== БЕЗ ФИЛЬТРА ===")
-for doc in docs:
-    print("Model:", doc.metadata["model"])
-    print("Fuel:", doc.metadata["fuel"])
-    print("Text:", doc.page_content)
-    print("---")
-
-
-# 2. Поиск только по дизельным автомобилям
-diesel_docs = store.similarity_search(
-    query="расход",
-    k=3,
-    filter=lambda doc: doc.metadata["fuel"] == "diesel",
-)
-
-print("=== ПО ДИЗЕЛЮ ===")
-for doc in diesel_docs:
-    print("Model:", doc.metadata["model"])
-    print("Fuel:", doc.metadata["fuel"])
-    print("Text:", doc.page_content)
-    print("---")
-
 
 retriever = store.as_retriever(search_kwargs={"k": 2})
 
+
 @tool
-def search_catalog(query: str) -> str:
-    """Ищет в объявлениях топливо, пробег, расход и состояние."""
-    docs = retriever.invoke(query)
-    return "\n\n".join(doc.page_content for doc in docs)
+def search_catalog(
+    query: str,
+    fuel: Literal["diesel", "petrol"] | None = None,
+) -> str:
+    """
+    Ищет в каталоге автомобилей информацию о пробеге,
+    расходе топлива и состоянии.
+
+    Args:
+        query: Поисковый запрос.
+        fuel: Необязательный фильтр по типу топлива.
+              diesel — дизель, petrol — бензин.
+    """
+
+    if fuel is not None:
+        docs = store.similarity_search(
+            query=query,
+            k=3,
+            filter=lambda doc: doc.metadata.get("fuel") == fuel,
+        )
+    else:
+        docs = store.similarity_search(
+            query=query,
+            k=3,
+        )
+
+    if not docs:
+        return "Ничего не найдено"
+
+    return "\n\n".join(
+        f"Model: {doc.metadata['model']}\n"
+        f"Fuel: {doc.metadata['fuel']}\n"
+        f"Text: {doc.page_content}"
+        for doc in docs
+    )
 
 
 @tool
@@ -122,39 +126,43 @@ agent = create_agent(
     tools=[search_catalog, get_car_price, get_car_year],
     system_prompt="""
         Ты автоэксперт.
-        Точную цену бери только через get_car_price.
-        Год бери только через get_car_year.
-        Топливо, пробег, расход и состояние бери только через search_catalog.
-        Если инструмент вернул "Car not found" или в каталоге нет факта, не выдумывай значение.
-        Отвечай кратко.
+        Для поиска информации об автомобилях используй search_catalog.
+        Если пользователь указывает тип топлива,
+        передавай его через аргумент fuel.
+        Не выдумывай значения.
     """,
     response_format=CarAnswer,
     checkpointer=memory,
 )
 
-# dialog = {"configurable": {"thread_id": "dialog-1"}}
 
-# agent.invoke(
-#     {"messages": [{"role": "user", "content": "Сколько стоит BMW 320d?"}]},
-#     dialog,
-# )
+questions = [
+    "Какой расход у дизельных BMW?",
+    "Какой расход у бензиновых BMW?",
+    "Сравни расход всех BMW.",
+]
 
-# result = agent.invoke(
-#     {
-#         "messages": [
-#             {"role": "user",
-#             "content": "Какой у неё расход и пробег?"}
-#             ]
-#     },
-#     dialog,
-# )
+for i, question in enumerate(questions):
+    print(f"\n=== ВОПРОС {i + 1} ===")
+    print(question)
 
-# for message in result["messages"]:
-#     print(type(message).__name__)
-#     print("content:", message.content)
-#     print("tool_calls:", getattr(message, "tool_calls", None))
-#     print("tool_call_id:", getattr(message, "tool_call_id", None))
-#     print("---")
+    config = {
+        "configurable": {"thread_id": f"metadata-{i}"}
+    }
 
-# answer = result["structured_response"]
-# print(answer.verdict, answer.estimated_price, answer.reason)
+    for chunk in agent.stream(
+        {"messages": [{"role": "user", "content": question}]},
+        config=config,
+        stream_mode="updates",
+    ):
+        for node_name, update in chunk.items():
+            for msg in update.get("messages", []):
+                for call in getattr(msg, "tool_calls", []):
+                    print("TOOL:", call["name"])
+                    print("ARGS:", call["args"])
+
+                if msg.type == "tool":
+                    print("RESULT:", msg.content[:500])
+
+            if "structured_response" in update:
+                print("ANSWER:", update["structured_response"])
