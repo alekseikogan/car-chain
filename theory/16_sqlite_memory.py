@@ -167,28 +167,6 @@ with SqliteSaver.from_conn_string(DB_PATH) as memory:
         config=dialog,
     )
 
-    # фывфывыф
-    print("\n=== DEBUG ===")
-
-    print("\n1. Structured response:")
-    print(result.get("structured_response"))
-
-    print("\n2. Last AIMessage:")
-    print(result["messages"][-1].content)
-
-    print("\n3. All state keys:")
-    print(list(result.keys()))
-
-    print("\n4. Saved state:")
-    state = agent.get_state(dialog)
-    print(state.values.get("structured_response"))
-
-    print("\n5. All tool calls:")
-    for message in result["messages"]:
-        if getattr(message, "tool_calls", None):
-            print(message.tool_calls)
-    # афа
-
     answer = result["structured_response"]
 
     print("\nANSWER:")
@@ -198,7 +176,7 @@ with SqliteSaver.from_conn_string(DB_PATH) as memory:
     for message in result["messages"]:
         print(
             type(message).__name__,
-            str(message.content)[:120],
+            str(message.content),
         )
 
     print("\nDATABASE:", DB_PATH)
