@@ -92,6 +92,10 @@ builder.add_edge(START, "model")
 builder.add_conditional_edges(
     "model",
     tools_condition,
+    path_map = {
+        "tool": "tools",
+        "__end__": END,
+    }
 )
 
 builder.add_edge("tools", "model")
