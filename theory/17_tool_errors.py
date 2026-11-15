@@ -55,7 +55,7 @@ def handle_tool_error(request, handler):
         print(f'[TOOL] Ошибка: {e}')
 
         return ToolMessage(
-            content="Car not found",
+            content=f"Ошибка: {e}",
             tool_call_id=request.tool_call["id"],
         )
 
