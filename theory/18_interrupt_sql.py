@@ -3,8 +3,9 @@ from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt, Command
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from pathlib import Path
 
 # ==========================================
 # 1. STATE
@@ -68,6 +69,15 @@ def buy_car(state: CarState):
     }
 
 
+def auto_approve(state: CarState):
+    print("\n[NODE] auto_approve")
+
+    return {
+        "approved": True,
+        "status": "auto_approved",
+    }
+
+
 def cancel_purchase(state: CarState):
     print("\n[NODE] cancel_purchase")
 
@@ -95,6 +105,7 @@ builder.add_node("get_price", get_price)
 builder.add_node("ask_approval", ask_approval)
 builder.add_node("buy_car", buy_car)
 builder.add_node("cancel_purchase", cancel_purchase)
+builder.add_node("auto_approve", auto_approve)
 
 builder.add_edge(START, "get_price")
 
@@ -103,7 +114,7 @@ builder.add_conditional_edges(
     should_ask_approval,
     path_map={
         "yes": "ask_approval",
-        "no": "buy_car",
+        "no": "auto_approve",
     },
 )
 
@@ -116,6 +127,7 @@ builder.add_conditional_edges(
     },
 )
 
+builder.add_edge("auto_approve", "buy_car")
 builder.add_edge("buy_car", END)
 builder.add_edge("cancel_purchase", END)
 
