@@ -104,6 +104,16 @@ builder.add_conditional_edges(
         "no": "buy_car",
     },
 )
+
+builder.add_conditional_edges(
+    "ask_approval",
+    check_approval,
+    path_map={
+        "buy": "buy_car",
+        "cancel": "cancel_purchase",
+    },
+)
+
 builder.add_edge("buy_car", END)
 builder.add_edge("cancel_purchase", END)
 
