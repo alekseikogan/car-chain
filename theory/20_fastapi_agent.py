@@ -2,7 +2,7 @@
 # Каждый POST /ask только подкладывает вопрос в уже открытый диалог.
 #
 # Из корня проекта:
-# poetry run uvicorn theory.fastapi_agent:app --host 127.0.0.1 --port 8000
+# poetry run uvicorn theory.20_fastapi_agent:app --host 127.0.0.1 --port 8000
 # Форма запроса: http://127.0.0.1:8000/docs
 
 from contextlib import asynccontextmanager
@@ -17,6 +17,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import BaseModel, Field
+from langgraph.types import interrupt, Command
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -65,9 +66,20 @@ def search_catalog(car: str) -> str:
     }
     return catalog.get(car, "Car not found")
 
+@tool
+def ask_approval(car: str, price: int) -> str:
+    """Запрашивает подтверждение покупки автомобиля."""
+    approved = interrupt({
+        "question": f"Подтверди покупку автомобиля {car} за {price} евро?",
+        "price": price,
+    })
+    if approved:
+        return f"Пользователь подтвердил покупку автомобиля {car} за {price} евро."
+    return "Пользователь отказался от покупки."
+
 
 # Отдельный файл, чтобы не смешать диалоги с theory/16_sqlite_memory.py.
-DB_PATH = Path(__file__).resolve().parent / "fastapi_dialogs.sqlite"
+DB_PATH = Path(__file__).resolve().parent / "20_fastapi_dialogs.sqlite"
 
 # Чекпоинт хранит CarAnswer. Без этого SqliteSaver не сможет его прочитать обратно.
 serde = JsonPlusSerializer(
@@ -78,7 +90,7 @@ serde = JsonPlusSerializer(
 def build_agent(memory: SqliteSaver):
     return create_agent(
         model=ChatOpenAI(model="gpt-4o-mini", temperature=0),
-        tools=[get_car_price, search_catalog],
+        tools=[get_car_price, search_catalog, ask_approval],
         response_format=CarAnswer,
         checkpointer=memory,
         system_prompt=(
@@ -90,7 +102,11 @@ def build_agent(memory: SqliteSaver):
             "Если из истории неясно, о какой машине речь, не вызывай инструменты "
             "и оставь цену и расход пустыми. "
             "Уже известные поля сохраняй. "
-            "reason пиши заново под последний вопрос."
+            "reason пиши заново под последний вопрос. "
+            "Если пользователь хочет купить машину, сначала узнай цену через get_car_price. "
+            "Когда цена известна, перед итоговым ответом вызови ask_approval "
+            "и дождись его результата. "
+            "Покупку подтверждай только по ответу ask_approval."
         ),
     )
 
@@ -108,12 +124,28 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-@app.post("/ask", response_model=CarAnswer)
-def ask(body: AskRequest) -> CarAnswer:
+@app.post("/ask")
+def ask(body: AskRequest):
     # Обычный def, не async: SqliteSaver умеет только синхронные вызовы.
     # FastAPI сам выполнит этот обработчик в пуле потоков.
     result = app.state.agent.invoke(
         {"messages": [{"role": "user", "content": body.question}]},
         config={"configurable": {"thread_id": body.thread_id}},
     )
-    return result["structured_response"]
+
+    paused = result.get("__interrupt__")
+    if paused:
+        return {"status": "need_user", **paused[0].value}
+    return {
+        "status": "done",
+        "answer": result["structured_response"].model_dump(),
+}
+
+
+@app.post("/resume")
+def resume(thread_id: str, resume: bool):
+    result = app.state.agent.invoke(
+        Command(resume=resume),
+        config={"configurable": {"thread_id": thread_id}},
+    )
+    return {"status": "success", "response": result["structured_response"]}
