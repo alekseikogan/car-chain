@@ -4,13 +4,16 @@
 # Из корня проекта:
 # poetry run uvicorn theory.20_fastapi_agent:app --host 127.0.0.1 --port 8000
 # Форма запроса: http://127.0.0.1:8000/docs
+# Поток шагов: curl -N -G http://127.0.0.1:8000/ask/stream --data-urlencode "thread_id=demo" --data-urlencode "question=Сколько стоит BMW 320d?"
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_openai import ChatOpenAI
@@ -106,7 +109,8 @@ def build_agent(memory: SqliteSaver):
             "Если пользователь хочет купить машину, сначала узнай цену через get_car_price. "
             "Когда цена известна, перед итоговым ответом вызови ask_approval "
             "и дождись его результата. "
-            "Покупку подтверждай только по ответу ask_approval."
+            "Покупку подтверждай только по ответу ask_approval. "
+            "В каждом CarAnswer обязательно заполни verdict: good, uncertain или bad."
         ),
     )
 
@@ -140,6 +144,66 @@ def ask(body: AskRequest):
         "status": "done",
         "answer": result["structured_response"].model_dump(),
 }
+
+
+def iter_agent_events(thread_id: str, question: str):
+    # Тот же цикл, что в 11_stream.py: каждое событие уходит клиенту сразу.
+    try:
+        yield from _iter_agent_events(thread_id, question)
+    except Exception as exc:
+        yield f"\n[ERROR] {exc}\n"
+
+
+def _iter_agent_events(thread_id: str, question: str):
+    for part in app.state.agent.stream(
+        {"messages": [{"role": "user", "content": question}]},
+        config={"configurable": {"thread_id": thread_id}},
+        stream_mode=["updates", "messages"],
+        version="v2",
+    ):
+        if part["type"] == "messages":
+            token, _metadata = part["data"]
+            # Аргументы инструмента и его ответ приходят отдельно, через updates.
+            if getattr(token, "tool_call_chunks", None):
+                continue
+            if getattr(token, "type", None) == "tool":
+                continue
+            if token.text:
+                yield token.text
+            continue
+
+        for node_name, update in part["data"].items():
+            if node_name == "__interrupt__":
+                for item in update:
+                    payload = getattr(item, "value", item)
+                    yield f"[PAUSED] {json.dumps(payload, ensure_ascii=False)}\n"
+                continue
+
+            if not isinstance(update, dict):
+                continue
+
+            for message in update.get("messages", []):
+                for call in getattr(message, "tool_calls", None) or []:
+                    yield (
+                        f"[MODEL] Вызов: {call['name']} "
+                        f"Аргументы: {call['args']}\n"
+                    )
+                if getattr(message, "type", None) == "tool":
+                    yield f"[TOOL] {message.name}: {message.content}\n"
+
+            answer = update.get("structured_response")
+            if answer is not None:
+                payload = answer.model_dump() if hasattr(answer, "model_dump") else answer
+                yield f"\n[FINAL] {json.dumps(payload, ensure_ascii=False)}\n"
+
+
+@app.get("/ask/stream")
+def ask_stream(thread_id: str, question: str):
+    return StreamingResponse(
+        iter_agent_events(thread_id, question),
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/resume")
